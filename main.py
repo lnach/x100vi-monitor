@@ -1,40 +1,89 @@
+import os
+import time
 import requests
 from bs4 import BeautifulSoup
 from discord_webhook import DiscordWebhook
-import time
+from dotenv import load_dotenv
 
-WEBHOOK_URL = "https://discord.com/api/webhooks/1394384425038512240/BmO35657wTNWukr8_UCG2dbbdjSvJnnCy2xBavtC5PwXaSY7JE_g5tY1aVPBPXeOroib"  # Replace with your actual webhook
+load_dotenv()
 
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 }
+ALERT_CACHE = {}
 
-SITES = {
-    "B&H": "https://www.bhphotovideo.com/c/product/1769033-REG/fujifilm_16821328_x100vi_digital_camera_silver.html",
-    "Adorama": "https://www.adorama.com/ifjx100vis.html",
-    "Best Buy": "https://www.bestbuy.com/site/fujifilm-x100vi-digital-camera-silver/6577751.p"
-}
-
-
-def notify(store, url, price):
-    """Send a Discord alert."""
-    message = f"🟢 **{store}** has the Fujifilm X100VI in stock for **${price}**!\n🔗 {url}"
-    webhook = DiscordWebhook(url=WEBHOOK_URL, content=message)
-    webhook.execute()
-    print(f"[+] Sent alert for {store} at ${price}")
+PRODUCTS = [
+    {
+        "name": "X100VI (Silver)",
+        "store": "B&H",
+        "url": "https://www.bhphotovideo.com/c/product/1899777-REG/fujifilm_16953912_x100vi_digital_camera_silver_coo_japan.html"
+    },
+    {
+        "name": "X100VI (Black)",
+        "store": "B&H",
+        "url": "https://www.bhphotovideo.com/c/product/1899778-REG/fujifilm_16953924_x100vi_digital_camera_black_coo_japan.html"
+    },
+    {
+        "name": "X100VI (Black)",
+        "store": "Adorama",
+        "url": "https://www.adorama.com/ifjx1006s.html"
+    },
+    {
+        "name": "X100VI (Silver)",
+        "store": "Adorama",
+        "url": "https://www.adorama.com/ifjx1006s.html"
+    },
+    {
+        "name": "X100VI (Silver)",
+        "store": "Best Buy",
+        "url": "https://www.bestbuy.com/site/fujifilm-x-series-x100vi-40-2mp-digital-camera-silver/6574272.p?skuId=6574272"
+    },
+    {
+        "name": "X100VI (Black)",
+        "store": "Best Buy",
+        "url": "https://www.bestbuy.com/site/fujifilm-x-series-x100vi-40-2mp-digital-camera-black/6574274.p?skuId=6574274"
+    }
+]
 
 
 def parse_price(text):
-    """Extracts float price from text like '$1,599.00'."""
     try:
         return float(text.replace('$', '').replace(',', '').strip())
     except:
         return None
 
 
-def check_bh():
-    url = SITES["B&H"]
-    r = requests.get(url, headers=HEADERS)
+from discord_webhook import DiscordWebhook, DiscordEmbed
+
+def notify(product_name, store, url, price):
+    key = f"{store}:{product_name}"
+    if ALERT_CACHE.get(key) == price:
+        return  # Skip duplicate
+    ALERT_CACHE[key] = price
+
+    webhook = DiscordWebhook(url=WEBHOOK_URL)
+    
+    embed = DiscordEmbed(
+        title=f'{store} | {product_name}',
+        description=f'**In stock for ${price}**',
+        color='03b2f8'
+    )
+    embed.set_url(url)
+    embed.set_footer(text='Fujifilm Stock Monitor')
+    embed.set_timestamp()  # adds current timestamp
+    embed.add_embed_field(name='Store', value=store)
+    embed.add_embed_field(name='Price', value=f"${price}")
+    embed.add_embed_field(name='Link', value=f"[Buy now]({url})", inline=False)
+
+    webhook.add_embed(embed)
+    webhook.execute()
+    print(f"[+] Alert sent: {store} | {product_name} | ${price}")
+
+
+
+def check_bh(product):
+    r = requests.get(product["url"], headers=HEADERS)
     soup = BeautifulSoup(r.text, "html.parser")
 
     stock = soup.select_one(".stockStatus")
@@ -43,12 +92,11 @@ def check_bh():
     if stock and "In Stock" in stock.text and price:
         p = parse_price(price.text)
         if p and p < 1700:
-            notify("B&H Photo", url, p)
+            notify(product["name"], product["store"], product["url"], p)
 
 
-def check_adorama():
-    url = SITES["Adorama"]
-    r = requests.get(url, headers=HEADERS)
+def check_adorama(product):
+    r = requests.get(product["url"], headers=HEADERS)
     soup = BeautifulSoup(r.text, "html.parser")
 
     stock = soup.select_one("#stockAvailability")
@@ -57,12 +105,11 @@ def check_adorama():
     if stock and "In Stock" in stock.text and price:
         p = parse_price(price.text)
         if p and p < 1700:
-            notify("Adorama", url, p)
+            notify(product["name"], product["store"], product["url"], p)
 
 
-def check_bestbuy():
-    url = SITES["Best Buy"]
-    r = requests.get(url, headers=HEADERS)
+def check_bestbuy(product):
+    r = requests.get(product["url"], headers=HEADERS)
     soup = BeautifulSoup(r.text, "html.parser")
 
     if "Sold Out" not in r.text and "Add to Cart" in r.text:
@@ -70,22 +117,27 @@ def check_bestbuy():
         if price_tag:
             p = parse_price(price_tag.text)
             if p and p < 1700:
-                notify("Best Buy", url, p)
+                notify(product["name"], product["store"], product["url"], p)
+
+
+STORE_CHECKS = {
+    "B&H": check_bh,
+    "Adorama": check_adorama,
+    "Best Buy": check_bestbuy
+}
 
 
 def run():
     while True:
-        print("🔄 Checking stock...")
-        try: check_bh()
-        except Exception as e: print("❌ B&H error:", e)
-
-        try: check_adorama()
-        except Exception as e: print("❌ Adorama error:", e)
-
-        try: check_bestbuy()
-        except Exception as e: print("❌ Best Buy error:", e)
-
-        time.sleep(45)  # wait 45 seconds between checks
+        print("🔄 Checking all products...")
+        for product in PRODUCTS:
+            try:
+                check_fn = STORE_CHECKS.get(product["store"])
+                if check_fn:
+                    check_fn(product)
+            except Exception as e:
+                print(f"❌ Error checking {product['store']} - {product['name']}: {e}")
+        time.sleep(45)
 
 
 if __name__ == "__main__":
