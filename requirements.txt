@@ -2,3 +2,5 @@ requests
 beautifulsoup4
 discord_webhook
 python-dotenv
+fastapi
+uvicorn
